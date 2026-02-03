@@ -1,114 +1,91 @@
 import streamlit as st
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 import numpy as np
-from PIL import Image
-import math
+from PIL import Image, ImageDraw, ImageOps
+import io
 
-st.set_page_config(
-    page_title="Akciğer Kanseri MathRIX Karar Destek Sistemi",
-    layout="wide"
-)
+# --- 1. SİSTEM AYARLARI ---
+st.set_page_config(page_title="Mathrix Analysis Engine", layout="wide")
 
-st.title("Akciğer Kanseri Görüntü Tabanlı MathRIX Destek Sistemi")
-st.caption("Bu sistem tanı koymaz, akademik ve klinik karar desteği sağlar.")
+@st.cache_resource
+def load_mathrix_engine():
+    try:
+        return load_model('lung_model.h5')
+    except:
+        return None
 
-# =======================
-# GÖRÜNTÜ ÖN İŞLEME
-# =======================
-def preprocess_image(img):
-    img = img.convert("L").resize((256, 256))
-    arr = np.array(img) / 255.0
-    return arr
+# --- 2. İLAÇ VE PROTOKOL VERİTABANI ---
+TREATMENT_DATA = {
+    'Adenocarcinoma': {
+        'label': 'ADENOKARSİNOM TESPİT EDİLDİ',
+        'drugs': ['Osimertinib', 'Gefitinib', 'Pemetrexed', 'Bevacizumab'],
+        'info': 'Hedefe yönelik tedavi ve EGFR mutasyon analizi önerilir.',
+        'color': 'red'
+    },
+    'Squamous Cell Carcinoma': {
+        'label': 'SKUAMÖZ HÜCRELİ KANSER TESPİT EDİLDİ',
+        'drugs': ['Cisplatin', 'Gemcitabine', 'Pembrolizumab', 'Docetaxel'],
+        'info': 'Platin bazlı kemoterapi ve immünoterapi kombinasyonu uygundur.',
+        'color': 'orange'
+    },
+    'Normal': {
+        'label': 'SAĞLIKLI AKCİĞER DOKUSU',
+        'drugs': ['İlaç Gerekli Değil'],
+        'info': 'Hücresel boşluklar ve matris yapısı normal sınırlardadır.',
+        'color': 'green'
+    }
+}
 
-def entropy_score(img):
-    hist, _ = np.histogram(img.flatten(), bins=256, range=(0,1), density=True)
-    hist = hist[hist > 0]
-    return -np.sum(hist * np.log2(hist))
+# --- 3. DERİN ANALİZ FONKSİYONU ---
+def run_mathrix_analysis(img):
+    # Boşlukları ve yoğunluğu sayalım
+    img_gray = ImageOps.grayscale(img)
+    arr = np.array(img_gray)
+    density = np.mean(arr < 127) * 100 # Hücre yoğunluğu
+    voids = np.mean(arr > 200) * 100    # Boşluk oranı
+    return round(density, 2), round(voids, 2)
 
-def cell_density(img):
-    return np.mean(img > 0.6)
+# --- 4. ARAYÜZ VE İŞLEME ---
+st.title("🖥️ MATHRIX DERİN TEŞHİS VE İLAÇ SİSTEMİ")
+st.write("---")
 
-def malignancy_probability(entropy, density):
-    score = 0.6 * entropy + 0.4 * density * 5
-    prob = 1 / (1 + math.exp(-(score - 3)))
-    return min(max(prob, 0.05), 0.95)
+engine = load_mathrix_engine()
+files = st.file_uploader("Analiz edilecek görselleri yükleyin", accept_multiple_files=True)
 
-def subtype_estimation(prob):
-    if prob > 0.7:
-        return {
-            "Adenokarsinom": 0.82,
-            "Skuamöz Hücreli Karsinom": 0.12,
-            "Diğer NSCLC": 0.06
-        }
-    elif prob > 0.5:
-        return {
-            "Adenokarsinom": 0.48,
-            "Skuamöz Hücreli Karsinom": 0.32,
-            "Belirsiz NSCLC": 0.20
-        }
-    else:
-        return {
-            "Benign / Düşük Dereceli Lezyon": 0.60,
-            "Atipik Hiperplazi": 0.25,
-            "Erken NSCLC Olasılığı": 0.15
-        }
-
-def tnm_stage(prob):
-    if prob < 0.4:
-        return "Evre I (Erken evre)"
-    elif prob < 0.6:
-        return "Evre II (Lokal ilerlemiş)"
-    elif prob < 0.8:
-        return "Evre III (Lenf nodu tutulumu olası)"
-    else:
-        return "Evre IV (Metastatik olasılık)"
-
-# =======================
-# ARAYÜZ
-# =======================
-uploaded = st.file_uploader("Histopatolojik / Radyolojik Görüntü Yükleyiniz", type=["png","jpg","jpeg"])
-
-if uploaded:
-    image = Image.open(uploaded)
-    img = preprocess_image(image)
-
-    entropy = entropy_score(img)
-    density = cell_density(img)
-    prob = malignancy_probability(entropy, density)
-    subtypes = subtype_estimation(prob)
-    stage = tnm_stage(prob)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(image, caption="Yüklenen Görüntü", use_container_width=True)
-    with col2:
-        st.metric("Malignite Olasılığı", f"%{prob*100:.1f}")
-        st.write(f"*Görüntü Entropisi:* {entropy:.2f}")
-        st.write(f"*Hücre Yoğunluğu:* {density:.2f}")
-        st.write(f"*Tahmini Klinik Evre:* {stage}")
-
-    st.subheader("🧬 Olası Histolojik Alt Tipler")
-    for k, v in subtypes.items():
-        st.write(f"- *{k}:* %{v*100:.1f}")
-
-    st.subheader("🩺 Akademik Klinik Değerlendirme")
-    st.markdown("""
-*Tanısal Yorum:*  
-Görüntü analizinde artmış doku düzensizliği ve hücresel yoğunluk saptanmıştır.
-Bu bulgular malignite lehine olabilir ancak *kesin tanı için patolojik doğrulama şarttır*.
-
-*Evreleme:*  
-TNM tabanlı istatistiksel tahminle klinik evre belirlenmiştir.
-Bu evreleme tanısal değil, *öngörüsel* niteliktedir.
-
-*Tedavi Yaklaşımı (Literatür Özeti):*
-- EGFR pozitif NSCLC → *Osimertinib*
-- ALK pozitif → *Alectinib*
-- PD-L1 yüksek → *Pembrolizumab*
-- Metastatik hastalık → Sistemik tedavi + palyatif yaklaşımlar
-
-*Prognoz:*  
-Evreye bağlı olarak medyan sağkalım 8–36 ay arasında değişebilir.
-Bu değerler *popülasyon istatistiğidir*.
-""")
-
-    st.success("Analiz tamamlandı. Klinik karar için multidisipliner değerlendirme gereklidir.")
+if files:
+    if st.button("ANALİZİ BAŞLAT"):
+        for file in files:
+            img = Image.open(file).convert('RGB')
+            
+            # Arka planda gerçek matematiksel ölçüm
+            density, voids = run_mathrix_analysis(img)
+            
+            # Model tahmini
+            img_input = np.array(img.resize((224, 224))) / 255.0
+            img_input = np.expand_dims(img_input, axis=0)
+            
+            if engine:
+                preds = engine.predict(img_input)
+                classes = ['Adenocarcinoma', 'Normal', 'Squamous Cell Carcinoma']
+                res = classes[np.argmax(preds)]
+                data = TREATMENT_DATA[res]
+                
+                # --- GÖRSEL ÇIKTI ---
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Resim üzerine bilgi kutusu ekleme
+                    st.image(img, caption=f"Yoğunluk: %{density} | Boşluk: %{voids}", use_container_width=True)
+                
+                with col2:
+                    if res == 'Normal':
+                        st.success(f"### {data['label']}")
+                    else:
+                        st.error(f"### {data['label']}")
+                        st.markdown("#### 💊 Önerilen İlaçlar:")
+                        for drug in data['drugs']:
+                            st.write(f"- {drug}")
+                        st.info(f"💡 *Not:* {data['info']}")
+                    
+                    st.metric("Sistem Güven Skoru", f"%{np.max(preds)*100:.2f}")
+                st.write("---")
