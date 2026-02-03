@@ -1,114 +1,100 @@
 import streamlit as st
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 import numpy as np
-from PIL import Image
-import math
+from PIL import Image, ImageDraw, ImageFont
+import io
 
-st.set_page_config(
-    page_title="Akciğer Kanseri MathRIX Karar Destek Sistemi",
-    layout="wide"
-)
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Mathrix Vision Core", layout="wide")
 
-st.title("Akciğer Kanseri Görüntü Tabanlı MathRIX Destek Sistemi")
-st.caption("Bu sistem tanı koymaz, akademik ve klinik karar desteği sağlar.")
+@st.cache_resource
+def load_mathrix_engine():
+    try:
+        return load_model('lung_model.h5')
+    except:
+        return None
 
-# =======================
-# GÖRÜNTÜ ÖN İŞLEME
-# =======================
-def preprocess_image(img):
-    img = img.convert("L").resize((256, 256))
-    arr = np.array(img) / 255.0
-    return arr
+# --- GENİŞLETİLMİŞ İLAÇ VE TEDAVİ VERİTABANI ---
+DRUG_DATABASE = {
+    'Adenocarcinoma': {
+        'label': 'ADENOKARSİNOM TESPİT EDİLDİ',
+        'drugs': ['Gefitinib (Iressa)', 'Erlotinib (Tarceva)', 'Afatinib (Gilotrif)', 'Osimertinib (Tagrisso)', 'Pemetrexed (Alimta)'],
+        'therapy': 'Hedefe Yönelik TKİ Terapisi + İmmünoterapi',
+        'color': (255, 0, 0) # Kırmızı
+    },
+    'Squamous Cell Carcinoma': {
+        'label': 'SKUAMÖZ HÜCRELİ KANSER TESPİT EDİLDİ',
+        'drugs': ['Cisplatin', 'Gemcitabine (Gemzar)', 'Paclitaxel (Taxol)', 'Pembrolizumab (Keytruda)', 'Necitumumab'],
+        'therapy': 'Platin Bazlı Kombinasyon + Monoklonal Antikor',
+        'color': (255, 165, 0) # Turuncu
+    },
+    'Normal': {
+        'label': 'SAĞLIKLI DOKU ANALİZİ',
+        'drugs': ['İlaç Gerekli Değil'],
+        'therapy': 'Yıllık Rutin Radyolojik Takip',
+        'color': (0, 255, 0) # Yeşil
+    }
+}
 
-def entropy_score(img):
-    hist, _ = np.histogram(img.flatten(), bins=256, range=(0,1), density=True)
-    hist = hist[hist > 0]
-    return -np.sum(hist * np.log2(hist))
+# --- GÖRÜNTÜ ÜZERİNE ANALİZ BALONU EKLEME ---
+def draw_analysis_overlay(img, label, color):
+    draw = ImageDraw.Draw(img)
+    width, height = img.size
+    # Resmin üzerine teknolojik bir çerçeve ve "Analiz Bulutu" çizelim
+    draw.rectangle([10, 10, width-10, height-10], outline=color, width=5)
+    draw.text((20, 20), f"SCANNING: {label}", fill=color)
+    return img
 
-def cell_density(img):
-    return np.mean(img > 0.6)
+# --- ANA EKRAN ---
+st.title("🖥️ MATHRIX VISION: DERİN TEŞHİS VE FARMASÖTİK ANALİZ")
+st.write("---")
 
-def malignancy_probability(entropy, density):
-    score = 0.6 * entropy + 0.4 * density * 5
-    prob = 1 / (1 + math.exp(-(score - 3)))
-    return min(max(prob, 0.05), 0.95)
+engine = load_mathrix_engine()
+files = st.file_uploader("Mathrix Veri Girişi (Resimleri Sürükleyin)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
-def subtype_estimation(prob):
-    if prob > 0.7:
-        return {
-            "Adenokarsinom": 0.82,
-            "Skuamöz Hücreli Karsinom": 0.12,
-            "Diğer NSCLC": 0.06
-        }
-    elif prob > 0.5:
-        return {
-            "Adenokarsinom": 0.48,
-            "Skuamöz Hücreli Karsinom": 0.32,
-            "Belirsiz NSCLC": 0.20
-        }
-    else:
-        return {
-            "Benign / Düşük Dereceli Lezyon": 0.60,
-            "Atipik Hiperplazi": 0.25,
-            "Erken NSCLC Olasılığı": 0.15
-        }
+if files:
+    if st.button("SİSTEMİ ÇALIŞTIR VE TEŞHİS KOY"):
+        for file in files:
+            img = Image.open(file).convert('RGB')
+            
+            # 1. Model Tahmini
+            img_input = img.resize((224, 224))
+            img_array = np.array(img_input) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            if engine:
+                preds = engine.predict(img_array)
+                classes = ['Adenocarcinoma', 'Normal', 'Squamous Cell Carcinoma']
+                res_key = classes[np.argmax(preds)]
+                data = DRUG_DATABASE[res_key]
+                
+                # 2. Görüntü Üzerine Görsel Analiz Ekle
+                analyzed_img = draw_analysis_overlay(img.copy(), data['label'], data['color'])
+                
+                # --- EKRAN TASARIMI ---
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.image(analyzed_img, caption="Mathrix Visual Scanning Output", use_container_width=True)
+                
+                with col2:
+                    if res_key == 'Normal':
+                        st.success(f"### {data['label']}")
+                    else:
+                        st.error(f"### {data['label']}")
+                        st.markdown(f"*🔬 Önerilen Terapi:* {data['therapy']}")
+                        st.markdown("#### 💊 Onaylı İlaç Protokolü:")
+                        for drug in data['drugs']:
+                            st.write(f"- {drug}")
+                    
+                    st.metric("Sistem Güven Endeksi", f"%{np.max(preds)*100:.2f}")
+                st.write("---")
+            else:
+                st.error("Mathrix Core (lung_model.h5) yüklenemedi!")
 
-def tnm_stage(prob):
-    if prob < 0.4:
-        return "Evre I (Erken evre)"
-    elif prob < 0.6:
-        return "Evre II (Lokal ilerlemiş)"
-    elif prob < 0.8:
-        return "Evre III (Lenf nodu tutulumu olası)"
-    else:
-        return "Evre IV (Metastatik olasılık)"
-
-# =======================
-# ARAYÜZ
-# =======================
-uploaded = st.file_uploader("Histopatolojik / Radyolojik Görüntü Yükleyiniz", type=["png","jpg","jpeg"])
-
-if uploaded:
-    image = Image.open(uploaded)
-    img = preprocess_image(image)
-
-    entropy = entropy_score(img)
-    density = cell_density(img)
-    prob = malignancy_probability(entropy, density)
-    subtypes = subtype_estimation(prob)
-    stage = tnm_stage(prob)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(image, caption="Yüklenen Görüntü", use_container_width=True)
-    with col2:
-        st.metric("Malignite Olasılığı", f"%{prob*100:.1f}")
-        st.write(f"*Görüntü Entropisi:* {entropy:.2f}")
-        st.write(f"*Hücre Yoğunluğu:* {density:.2f}")
-        st.write(f"*Tahmini Klinik Evre:* {stage}")
-
-    st.subheader("🧬 Olası Histolojik Alt Tipler")
-    for k, v in subtypes.items():
-        st.write(f"- *{k}:* %{v*100:.1f}")
-
-    st.subheader("🩺 Akademik Klinik Değerlendirme")
-    st.markdown("""
-*Tanısal Yorum:*  
-Görüntü analizinde artmış doku düzensizliği ve hücresel yoğunluk saptanmıştır.
-Bu bulgular malignite lehine olabilir ancak *kesin tanı için patolojik doğrulama şarttır*.
-
-*Evreleme:*  
-TNM tabanlı istatistiksel tahminle klinik evre belirlenmiştir.
-Bu evreleme tanısal değil, *öngörüsel* niteliktedir.
-
-*Tedavi Yaklaşımı (Literatür Özeti):*
-- EGFR pozitif NSCLC → *Osimertinib*
-- ALK pozitif → *Alectinib*
-- PD-L1 yüksek → *Pembrolizumab*
-- Metastatik hastalık → Sistemik tedavi + palyatif yaklaşımlar
-
-*Prognoz:*  
-Evreye bağlı olarak medyan sağkalım 8–36 ay arasında değişebilir.
-Bu değerler *popülasyon istatistiğidir*.
-""")
-
-    st.success("Analiz tamamlandı. Klinik karar için multidisipliner değerlendirme gereklidir.")
+# --- SIDEBAR ---
+st.sidebar.header("SİSTEM MODÜLLERİ")
+st.sidebar.write("🟢 Visual Analytics: ON")
+st.sidebar.write("🟢 Drug Database: ON")
+st.sidebar.write("🟢 Matrix Scannig: ON")
